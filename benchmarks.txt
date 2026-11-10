@@ -12,11 +12,13 @@ Weights/activations: FP32
 Linear and vocabulary projection accumulation: FP64
 Batch size: 1
 Prompt IDs: [464, 3139, 286, 4881, 318]
-Generated tokens: 20
+Generated tokens per run: 20
 Decoding: greedy
 KV cache: disabled
-Timing: generation loop, including prefill; excludes weight loading
+Timing: generation including prefill; excludes weight loading
 Console output inside timed loop: disabled
+Prompt reset before each run: yes
+Separate warmup runs: none
 
 Experiment 1: Baseline
 ----------------------
@@ -32,11 +34,35 @@ Correctness:
 Experiment 2: Linear loop reordering
 -----------------------------------
 Change: loop order becomes (row, in, out), accessing weights consecutively
-Other settings: unchanged
-Run times: 8.86137 seconds
-Runs: 1; preliminary measurement
-Median time: 8.86137 seconds (single run)
-Throughput: 2.25699 tokens/sec
-Speedup over baseline: 7.09x
-Generation time reduction: 85.9%
-Correctness: generated 20-token sequence matches baseline and PyTorch
+Other model and build settings: unchanged
+Forward implementation: normal forward(); no KV caching
+Runs: 5 consecutive runs in one process
+
+Run 1: 18.7825 seconds; 20 tokens
+Run 2: 14.6408 seconds; 20 tokens
+Run 3: 6.70026 seconds; 20 tokens
+Run 4: 6.53972 seconds; 20 tokens
+Run 5: 6.52903 seconds; 20 tokens
+
+Average generation time: 10.6385 seconds
+Median generation time: 6.70026 seconds
+Overall throughput: 1.87997 tokens/sec
+Throughput calculation: total generated tokens / total measured seconds
+
+Earlier single-run measurement:
+- Generation time: 8.86137 seconds
+- Throughput: 2.25699 tokens/sec
+- Speedup over single-run baseline: 7.09x
+
+Correctness:
+- All five generated sequences match each other
+- Generated sequence matches the previously verified baseline/PyTorch sequence
+
+Notes:
+- First two runs were substantially slower; cause not yet established.
+- All five runs are included in the average and median.
+- Baseline has only one measurement, so speedup comparisons remain preliminary.
+- Repeat the baseline with the same five-run procedure for a stronger comparison.
+
+Full sequence, including prompt:
+464 3139 286 4881 318 262 3139 286 262 4141 2066 11 290 262 3139 286 262 4141 2066 318 262 3139 286 262 4141

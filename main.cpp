@@ -1,5 +1,7 @@
 #include "helpers.h"
 #include <chrono>
+#include <algorithm>
+#include <array>
 
 int main() {
     // Token IDs for "The capital of France is"
@@ -16,6 +18,7 @@ int main() {
     );
 
     std::cout << "Loaded both embedding tables\n";
+
 
     const std::size_t embedding_dim = 768;
     const std::size_t sequence_length = tokens.size();
@@ -62,60 +65,114 @@ int main() {
 
     std::cout << "Generated token IDs:\n";
 
-    const std::size_t initial_length = tokens.size();
-    const auto start = std::chrono::steady_clock::now();
+    KVCache cache(
+        blocks.size(),
+        max_positions,
+        embedding_dim
+    );
 
-    for (std::size_t step = 0; step < max_new_tokens; ++step) {
-        if (tokens.size() >= max_positions) {
-            break;
-        }
+        // Five-run benchmark: normal forward(), no KV caching.
+    const std::vector<int> prompt = {464, 3139, 286, 4881, 318};
 
-        auto logits = forward(
-            tokens,
-            token_embeddings,
-            position_embeddings,
-            blocks,
-            final_gamma,
-            final_beta,
-            embedding_dim,
-            num_heads
-        );
+    std::array<double, 5> run_times{};
+    std::array<std::size_t, 5> generated_counts{};
 
-        // Greedy selection.
-        std::size_t next_id = 0;
+    std::vector<int> first_sequence;
+    bool sequences_match = true;
 
-        for (std::size_t id = 1; id < logits.size(); ++id) {
-            if (logits[id] > logits[next_id]) {
-                next_id = id;
+    for (std::size_t run = 0; run < run_times.size(); ++run) {
+        // Start every run with the same original prompt.
+        auto run_tokens = prompt;
+
+        const auto start = std::chrono::steady_clock::now();
+
+        for (std::size_t step = 0; step < max_new_tokens; ++step) {
+            if (run_tokens.size() >= max_positions) {
+                break;
+            }
+
+            auto logits = forward(
+                run_tokens,
+                token_embeddings,
+                position_embeddings,
+                blocks,
+                final_gamma,
+                final_beta,
+                embedding_dim,
+                num_heads
+            );
+
+            // Select the highest-scoring next token.
+            std::size_t next_id = 0;
+
+            for (std::size_t id = 1; id < logits.size(); ++id) {
+                if (logits[id] > logits[next_id]) {
+                    next_id = id;
+                }
+            }
+
+            run_tokens.push_back(static_cast<int>(next_id));
+
+            if (static_cast<int>(next_id) == eos_token_id) {
+                break;
             }
         }
 
-        tokens.push_back(static_cast<int>(next_id));
+        const auto end = std::chrono::steady_clock::now();
 
-        // std::cout << next_id << ' ' << std::flush;
+        run_times[run] =
+            std::chrono::duration<double>(end - start).count();
 
-        if (static_cast<int>(next_id) == eos_token_id) {
-            break;
+        generated_counts[run] = run_tokens.size() - prompt.size();
+
+        if (run == 0) {
+            first_sequence = run_tokens;
+        } else if (run_tokens != first_sequence) {
+            sequences_match = false;
         }
     }
 
-    const auto end = std::chrono::steady_clock::now();
+    // Report results outside the timed sections.
+    double total_seconds = 0.0;
+    std::size_t total_generated = 0;
 
-    const double seconds =
-        std::chrono::duration<double>(end - start).count();
+    for (std::size_t run = 0; run < run_times.size(); ++run) {
+        total_seconds += run_times[run];
+        total_generated += generated_counts[run];
 
-    const std::size_t generated_count = tokens.size() - initial_length;
+        std::cout << "Run " << run + 1
+                << ": " << run_times[run] << " seconds"
+                << ", " << generated_counts[run] << " tokens\n";
+    }
 
-    std::cout << "\nGeneration time: " << seconds << " seconds\n";
-    std::cout << "Throughput: "
-            << generated_count / seconds << " tokens/sec\n";
+    auto sorted_times = run_times;
+    std::sort(sorted_times.begin(), sorted_times.end());
+
+    const double average_seconds =
+        total_seconds / static_cast<double>(run_times.size());
+
+    const double median_seconds =
+        sorted_times[sorted_times.size() / 2];
+
+    std::cout << "\nAverage time: "
+            << average_seconds << " seconds\n";
+
+    std::cout << "Median time: "
+            << median_seconds << " seconds\n";
+
+    std::cout << "Overall throughput: "
+            << static_cast<double>(total_generated) / total_seconds
+            << " tokens/sec\n";
+
+    std::cout << "All five sequences match: "
+            << (sequences_match ? "yes" : "NO") << '\n';
 
     std::cout << "\nFull sequence:\n";
 
-    for (int id : tokens) {
+    for (int id : first_sequence) {
         std::cout << id << ' ';
     }
 
-    std::cout << '\n';
+    std::cout << '\n';   
 
 }
