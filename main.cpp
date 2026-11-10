@@ -71,7 +71,7 @@ int main() {
         embedding_dim
     );
 
-        // Five-run benchmark: normal forward(), no KV caching.
+            // Five-run benchmark: KV caching with token-by-token prefill.
     const std::vector<int> prompt = {464, 3139, 286, 4881, 318};
 
     std::array<double, 5> run_times{};
@@ -81,41 +81,66 @@ int main() {
     bool sequences_match = true;
 
     for (std::size_t run = 0; run < run_times.size(); ++run) {
-        // Start every run with the same original prompt.
         auto run_tokens = prompt;
+
+        // Every run starts with an empty cache.
+        KVCache run_cache(
+            blocks.size(), max_positions, embedding_dim
+        );
 
         const auto start = std::chrono::steady_clock::now();
 
-        for (std::size_t step = 0; step < max_new_tokens; ++step) {
-            if (run_tokens.size() >= max_positions) {
-                break;
-            }
+        // Prefill: process each prompt token once.
+        std::vector<float> next_logits;
 
-            auto logits = forward(
-                run_tokens,
+        for (int id : prompt) {
+            next_logits = forward_cached(
+                id,
                 token_embeddings,
                 position_embeddings,
                 blocks,
                 final_gamma,
                 final_beta,
+                run_cache,
                 embedding_dim,
                 num_heads
             );
+        }
 
-            // Select the highest-scoring next token.
+        // The last prefill call predicts the first generated token.
+        for (std::size_t step = 0; step < max_new_tokens; ++step) {
+            if (run_tokens.size() >= max_positions) {
+                break;
+            }
+
             std::size_t next_id = 0;
 
-            for (std::size_t id = 1; id < logits.size(); ++id) {
-                if (logits[id] > logits[next_id]) {
+            for (std::size_t id = 1; id < next_logits.size(); ++id) {
+                if (next_logits[id] > next_logits[next_id]) {
                     next_id = id;
                 }
             }
 
             run_tokens.push_back(static_cast<int>(next_id));
 
-            if (static_cast<int>(next_id) == eos_token_id) {
+            if (static_cast<int>(next_id) == eos_token_id ||
+                step + 1 == max_new_tokens ||
+                run_tokens.size() >= max_positions) {
                 break;
             }
+
+            // Decode: process only the newly generated token.
+            next_logits = forward_cached(
+                static_cast<int>(next_id),
+                token_embeddings,
+                position_embeddings,
+                blocks,
+                final_gamma,
+                final_beta,
+                run_cache,
+                embedding_dim,
+                num_heads
+            );
         }
 
         const auto end = std::chrono::steady_clock::now();
@@ -132,7 +157,7 @@ int main() {
         }
     }
 
-    // Report results outside the timed sections.
+    // Report outside the timed sections.
     double total_seconds = 0.0;
     std::size_t total_generated = 0;
 
@@ -148,17 +173,13 @@ int main() {
     auto sorted_times = run_times;
     std::sort(sorted_times.begin(), sorted_times.end());
 
-    const double average_seconds =
-        total_seconds / static_cast<double>(run_times.size());
-
-    const double median_seconds =
-        sorted_times[sorted_times.size() / 2];
-
     std::cout << "\nAverage time: "
-            << average_seconds << " seconds\n";
+            << total_seconds / static_cast<double>(run_times.size())
+            << " seconds\n";
 
     std::cout << "Median time: "
-            << median_seconds << " seconds\n";
+            << sorted_times[sorted_times.size() / 2]
+            << " seconds\n";
 
     std::cout << "Overall throughput: "
             << static_cast<double>(total_generated) / total_seconds
@@ -167,12 +188,24 @@ int main() {
     std::cout << "All five sequences match: "
             << (sequences_match ? "yes" : "NO") << '\n';
 
+    // Check against the previously verified uncached result.
+    const std::vector<int> expected_sequence = {
+        464, 3139, 286, 4881, 318,
+        262, 3139, 286, 262, 4141, 2066, 11, 290,
+        262, 3139, 286, 262, 4141, 2066, 318,
+        262, 3139, 286, 262, 4141
+    };
+
+    std::cout << "Matches uncached reference sequence: "
+            << (first_sequence == expected_sequence ? "yes" : "NO")
+            << '\n';
+
     std::cout << "\nFull sequence:\n";
 
     for (int id : first_sequence) {
         std::cout << id << ' ';
     }
 
-    std::cout << '\n';   
+    std::cout << '\n';
 
 }

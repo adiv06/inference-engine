@@ -66,3 +66,36 @@ Notes:
 
 Full sequence, including prompt:
 464 3139 286 4881 318 262 3139 286 262 4141 2066 11 290 262 3139 286 262 4141 2066 318 262 3139 286 262 4141
+
+
+Experiment 3: KV caching
+------------------------
+Change: retain per-layer K/V and process each input token once
+Linear implementation: optimized (row, in, out)
+Prefill: token-by-token; vocabulary projection on every prompt token
+KV cache: enabled; fresh cache for each run
+Timing: includes prefill and decode; excludes weight loading
+Cache capacity allocation: outside timer
+Separate warmup runs: none
+Runs: 5 consecutive runs in one process
+
+Run 1: 1.19332 seconds; 20 tokens
+Run 2: 1.13698 seconds; 20 tokens
+Run 3: 1.16447 seconds; 20 tokens
+Run 4: 1.14969 seconds; 20 tokens
+Run 5: 1.18390 seconds; 20 tokens
+
+Average generation time: 1.16568 seconds
+Median generation time: 1.16447 seconds
+Overall throughput: 17.1574 tokens/sec
+
+Speedup over uncached optimized forward:
+- Median-based: 5.75x
+- Average-based: 9.13x
+- Uncached comparison had substantially slower first two runs;
+  median-based comparison is less affected by those runs.
+
+Correctness:
+- Prompt-end cached logits exactly matched uncached logits
+- All five generated sequences match each other
+- Generated sequence matches the verified uncached reference

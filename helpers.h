@@ -8,6 +8,27 @@
 #include <cmath>
 #include <limits>
 
+struct LayerKVCache {
+    // Layout: [cached_tokens, embedding_dim].
+    std::vector<float> keys;
+    std::vector<float> values;
+};
+
+struct KVCache {
+    std::vector<LayerKVCache> layers;
+    std::size_t length = 0; // Number of fully processed tokens.
+
+    KVCache(
+        std::size_t num_layers,
+        std::size_t max_positions,
+        std::size_t embedding_dim
+    ) : layers(num_layers) {
+        for (auto& layer : layers) {
+            layer.keys.reserve(max_positions * embedding_dim);
+            layer.values.reserve(max_positions * embedding_dim);
+        }
+    }
+};
 
 struct BlockWeights {
     std::vector<float> ln1_gamma, ln1_beta;
@@ -104,6 +125,72 @@ inline std::vector<float> softmax_rows(
     }
 
     return output;
+}
+
+inline std::vector<float> cached_attention(
+    const std::vector<float>& q,
+    const LayerKVCache& cache,
+    std::size_t embedding_dim,
+    std::size_t num_heads
+) {
+    const std::size_t head_dim = embedding_dim / num_heads;
+    const std::size_t cached_tokens =
+        cache.keys.size() / embedding_dim;
+
+    if (cached_tokens == 0 ||
+        cache.keys.size() != cache.values.size()) {
+        throw std::runtime_error("Invalid KV cache");
+    }
+
+    const float scale =
+        1.0f / std::sqrt(static_cast<float>(head_dim));
+
+    // One query per head, scored against all cached tokens.
+    // Shape: [num_heads, cached_tokens].
+    std::vector<float> scores(num_heads * cached_tokens);
+
+    for (std::size_t head = 0; head < num_heads; ++head) {
+        const std::size_t head_offset = head * head_dim;
+
+        for (std::size_t token = 0; token < cached_tokens; ++token) {
+            float dot = 0.0f;
+
+            for (std::size_t d = 0; d < head_dim; ++d) {
+                dot += q[head_offset + d]
+                     * cache.keys[
+                           token * embedding_dim + head_offset + d
+                       ];
+            }
+
+            scores[head * cached_tokens + token] = dot * scale;
+        }
+    }
+
+    auto weights = softmax_rows(
+        scores, num_heads, cached_tokens
+    );
+
+    // Concatenated head outputs: one 768-value token vector.
+    std::vector<float> context(embedding_dim, 0.0f);
+
+    for (std::size_t head = 0; head < num_heads; ++head) {
+        const std::size_t head_offset = head * head_dim;
+
+        for (std::size_t d = 0; d < head_dim; ++d) {
+            float sum = 0.0f;
+
+            for (std::size_t token = 0; token < cached_tokens; ++token) {
+                sum += weights[head * cached_tokens + token]
+                     * cache.values[
+                           token * embedding_dim + head_offset + d
+                       ];
+            }
+
+            context[head_offset + d] = sum;
+        }
+    }
+
+    return context;
 }
 
 inline std::vector<float> attention_scores(
@@ -477,6 +564,162 @@ inline std::vector<float> forward(
 
         logits[token] = static_cast<float>(sum);
     }
+
+    return logits;
+}
+
+inline std::vector<float> transformer_block_cached(
+    const std::vector<float>& x,
+    const BlockWeights& w,
+    LayerKVCache& cache,
+    std::size_t embedding_dim,
+    std::size_t num_heads
+) {
+    // x contains one token: [1, embedding_dim].
+    auto normalized = layer_norm(
+        x, w.ln1_gamma, w.ln1_beta,
+        1, embedding_dim
+    );
+
+    auto qkv = linear(
+        normalized, w.qkv_weight, w.qkv_bias,
+        1, embedding_dim, 3 * embedding_dim
+    );
+
+    std::vector<float> q(
+        qkv.begin(),
+        qkv.begin() + embedding_dim
+    );
+
+    // Append the current token's K and V before attention.
+    cache.keys.insert(
+        cache.keys.end(),
+        qkv.begin() + embedding_dim,
+        qkv.begin() + 2 * embedding_dim
+    );
+
+    cache.values.insert(
+        cache.values.end(),
+        qkv.begin() + 2 * embedding_dim,
+        qkv.end()
+    );
+
+    auto context = cached_attention(
+        q, cache, embedding_dim, num_heads
+    );
+
+    auto attention_output = linear(
+        context, w.attn_out_weight, w.attn_out_bias,
+        1, embedding_dim, embedding_dim
+    );
+
+    std::vector<float> after_attention(embedding_dim);
+
+    for (std::size_t d = 0; d < embedding_dim; ++d) {
+        after_attention[d] = x[d] + attention_output[d];
+    }
+
+    auto mlp_input = layer_norm(
+        after_attention, w.ln2_gamma, w.ln2_beta,
+        1, embedding_dim
+    );
+
+    auto hidden = linear(
+        mlp_input, w.fc_weight, w.fc_bias,
+        1, embedding_dim, 4 * embedding_dim
+    );
+
+    gelu_inplace(hidden);
+
+    auto mlp_output = linear(
+        hidden, w.mlp_out_weight, w.mlp_out_bias,
+        1, 4 * embedding_dim, embedding_dim
+    );
+
+    std::vector<float> output(embedding_dim);
+
+    for (std::size_t d = 0; d < embedding_dim; ++d) {
+        output[d] = after_attention[d] + mlp_output[d];
+    }
+
+    return output;
+}
+
+inline std::vector<float> forward_cached(
+    int token_id,
+    const std::vector<float>& token_embeddings,
+    const std::vector<float>& position_embeddings,
+    const std::vector<BlockWeights>& blocks,
+    const std::vector<float>& final_gamma,
+    const std::vector<float>& final_beta,
+    KVCache& cache,
+    std::size_t embedding_dim,
+    std::size_t num_heads
+) {
+    const std::size_t vocab_size =
+        token_embeddings.size() / embedding_dim;
+
+    const std::size_t max_positions =
+        position_embeddings.size() / embedding_dim;
+
+    if (token_id < 0 ||
+        static_cast<std::size_t>(token_id) >= vocab_size ||
+        cache.length >= max_positions ||
+        cache.layers.size() != blocks.size()) {
+        throw std::runtime_error("Invalid cached forward input");
+    }
+
+    // Before this call, every layer must contain cache.length tokens.
+    for (const auto& layer : cache.layers) {
+        if (layer.keys.size() != cache.length * embedding_dim ||
+            layer.values.size() != cache.length * embedding_dim) {
+            throw std::runtime_error("Inconsistent KV cache length");
+        }
+    }
+
+    // One token, at its actual position in the full sequence.
+    std::vector<float> hidden(embedding_dim);
+
+    for (std::size_t d = 0; d < embedding_dim; ++d) {
+        hidden[d] =
+            token_embeddings[
+                static_cast<std::size_t>(token_id) * embedding_dim + d
+            ]
+            + position_embeddings[cache.length * embedding_dim + d];
+    }
+
+    for (std::size_t layer = 0; layer < blocks.size(); ++layer) {
+        hidden = transformer_block_cached(
+            hidden,
+            blocks[layer],
+            cache.layers[layer],
+            embedding_dim,
+            num_heads
+        );
+    }
+
+    hidden = layer_norm(
+        hidden, final_gamma, final_beta,
+        1, embedding_dim
+    );
+
+    std::vector<float> logits(vocab_size);
+
+    for (std::size_t token = 0; token < vocab_size; ++token) {
+        double sum = 0.0;
+
+        for (std::size_t d = 0; d < embedding_dim; ++d) {
+            sum += static_cast<double>(hidden[d])
+                 * static_cast<double>(
+                       token_embeddings[token * embedding_dim + d]
+                   );
+        }
+
+        logits[token] = static_cast<float>(sum);
+    }
+
+    // All layers have now processed this token.
+    ++cache.length;
 
     return logits;
 }
