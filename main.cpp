@@ -6,6 +6,7 @@
 int main() {
     // Token IDs for "The capital of France is"
     std::vector<int> tokens = {464, 3139, 286, 4881, 318};
+    
 
     auto token_embeddings = load_floats(
         "exports/token_embeddings.bin",
@@ -72,7 +73,8 @@ int main() {
     );
 
             // Five-run benchmark: KV caching with token-by-token prefill.
-    const std::vector<int> prompt = {464, 3139, 286, 4881, 318};
+    // const std::vector<int> prompt = {464, 3139, 286, 4881, 318};
+    const std::vector<int> prompt = {17250, 45038, 534, 1438};
 
     std::array<double, 5> run_times{};
     std::array<std::size_t, 5> generated_counts{};
