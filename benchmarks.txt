@@ -99,3 +99,67 @@ Correctness:
 - Prompt-end cached logits exactly matched uncached logits
 - All five generated sequences match each other
 - Generated sequence matches the verified uncached reference
+
+======================= PYTORCH COMPARISONS =========================================================
+
+Experiment 4: PyTorch CPU comparison
+-------------------------------------
+CPU identifier: Intel64 Family 6 Model 154 Stepping 4, GenuineIntel
+PyTorch: 2.15.0+cpu
+Transformers: 4.57.6
+Attention implementation: eager
+Weights/activations: FP32
+Prompt tokens: 5
+Generated tokens per run: 20
+Decoding: greedy
+Runs per configuration: 5
+Separate warmup runs: none
+Timing: includes prefill/generation; excludes loading/tokenization
+Configuration order: 10-thread uncached, 10-thread cached,
+                     1-thread uncached, 1-thread cached
+
+10 threads, KV cache disabled:
+Run times: 1.178699, 1.099378, 1.081886, 1.089201, 1.073532 seconds
+Average: 1.104539 seconds
+Median: 1.089201 seconds
+Overall throughput: 18.107100 tokens/sec
+
+10 threads, KV cache enabled:
+Run times: 0.815475, 0.772037, 0.766804, 0.775909, 0.762135 seconds
+Average: 0.778472 seconds
+Median: 0.772037 seconds
+Overall throughput: 25.691358 tokens/sec
+
+1 thread, KV cache disabled:
+Run times: 2.895768, 2.850461, 2.858438, 2.940826, 3.437234 seconds
+Average: 2.996546 seconds
+Median: 2.895768 seconds
+Overall throughput: 6.674352 tokens/sec
+
+1 thread, KV cache enabled:
+Run times: 1.675904, 1.626145, 1.600739, 1.449944, 1.462448 seconds
+Average: 1.563036 seconds
+Median: 1.600739 seconds
+Overall throughput: 12.795611 tokens/sec
+
+Correctness:
+- All five sequences match within each configuration.
+- All configurations match the verified C++ reference sequence.
+
+Cached comparison using median latency:
+- Custom C++: 1.164470 seconds
+- PyTorch, 1 thread: 1.600739 seconds
+- PyTorch, 10 threads: 0.772037 seconds
+- C++ is 1.37x faster than single-thread PyTorch.
+- 10-thread PyTorch is 1.51x faster than C++.
+
+Limitations:
+- Results cover one short prompt and 20 generated tokens.
+- C++ and PyTorch were measured separately; system conditions may differ.
+- C++ linear/vocabulary projections accumulate in FP64.
+- PyTorch cached prefill processes the prompt together;
+  C++ cached prefill processes tokens sequentially.
+- Fixed configuration order and no separate warmup.
+
+
+========================================================================================================
