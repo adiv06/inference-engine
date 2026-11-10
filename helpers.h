@@ -146,7 +146,34 @@ inline std::vector<float> attention_scores(
     return scores;
 }
 
-std::vector<float> linear(
+// std::vector<float> linear(
+//     const std::vector<float>& input,
+//     const std::vector<float>& weight,
+//     const std::vector<float>& bias,
+//     std::size_t rows,
+//     std::size_t input_width,
+//     std::size_t output_width
+// ) {
+//     std::vector<float> output(rows * output_width);
+
+//     for (std::size_t row = 0; row < rows; ++row) {
+//         for (std::size_t out = 0; out < output_width; ++out) {
+//             double sum = static_cast<double>(bias[out]);
+
+//             for (std::size_t in = 0; in < input_width; ++in) {
+//                 sum += static_cast<double>(input[row * input_width + in])
+//                 * static_cast<double>(weight[in * output_width + out]);
+//             }
+
+//             output[row * output_width + out] = static_cast<float>(sum);
+//         }
+//     }
+
+//     return output;
+// }
+
+//Cache friendly projection with partial sums...
+inline std::vector<float> linear(
     const std::vector<float>& input,
     const std::vector<float>& weight,
     const std::vector<float>& bias,
@@ -155,17 +182,29 @@ std::vector<float> linear(
     std::size_t output_width
 ) {
     std::vector<float> output(rows * output_width);
+    std::vector<double> sums(output_width);
 
     for (std::size_t row = 0; row < rows; ++row) {
+        // Start every output sum with its bias.
         for (std::size_t out = 0; out < output_width; ++out) {
-            double sum = static_cast<double>(bias[out]);
+            sums[out] = bias[out];
+        }
 
-            for (std::size_t in = 0; in < input_width; ++in) {
-                sum += static_cast<double>(input[row * input_width + in])
-                * static_cast<double>(weight[in * output_width + out]);
+        for (std::size_t in = 0; in < input_width; ++in) {
+            // Reuse this input value across the entire weight row.
+            const double value = input[row * input_width + in];
+            const std::size_t weight_offset = in * output_width;
+
+            for (std::size_t out = 0; out < output_width; ++out) {
+                sums[out] += value
+                    * static_cast<double>(weight[weight_offset + out]);
             }
+        }
 
-            output[row * output_width + out] = static_cast<float>(sum);
+        // Store the completed output row.
+        for (std::size_t out = 0; out < output_width; ++out) {
+            output[row * output_width + out] =
+                static_cast<float>(sums[out]);
         }
     }
 

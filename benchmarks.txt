@@ -1,0 +1,42 @@
+GPT-2 CPU Inference Benchmarks
+=============================
+
+Shared settings
+---------------
+Model: GPT-2 small (124,439,808 parameters)
+Device: CPU
+CPU model: TODO
+Compiler: MSVC 19.33.31630, x64
+Build command: cl /EHsc /std:c++17 /O2 main.cpp /Fe:inference.exe
+Weights/activations: FP32
+Linear and vocabulary projection accumulation: FP64
+Batch size: 1
+Prompt IDs: [464, 3139, 286, 4881, 318]
+Generated tokens: 20
+Decoding: greedy
+KV cache: disabled
+Timing: generation loop, including prefill; excludes weight loading
+Console output inside timed loop: disabled
+
+Experiment 1: Baseline
+----------------------
+Implementation: original linear loop order (row, out, in)
+Generation time: 62.8321 seconds
+Throughput: 0.318309 tokens/sec
+Runs: 1; preliminary measurement
+Correctness:
+- First-step logits: 0 / 50257 outside tolerance
+- Maximum absolute logit error: 9.91821e-05
+- Generated sequence matches PyTorch for this prompt
+
+Experiment 2: Linear loop reordering
+-----------------------------------
+Change: loop order becomes (row, in, out), accessing weights consecutively
+Other settings: unchanged
+Run times: 8.86137 seconds
+Runs: 1; preliminary measurement
+Median time: 8.86137 seconds (single run)
+Throughput: 2.25699 tokens/sec
+Speedup over baseline: 7.09x
+Generation time reduction: 85.9%
+Correctness: generated 20-token sequence matches baseline and PyTorch
