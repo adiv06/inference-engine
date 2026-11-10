@@ -1,0 +1,13 @@
+# Exported weights and reference data
+exports/
+
+# Compiled files
+*.exe
+*.obj
+*.pdb
+*.ilk
+
+# Python environments and caches
+.venv/
+__pycache__/
+.ipynb_checkpoints/
